@@ -1,0 +1,132 @@
+---
+title: "Write up"
+author: "DRAIDI F"
+date: "21 octobre 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Predicting the manner physical exercise is done  
+##Table Of Content: {#toc}  
+
+[1. Exploring and cleaning data](#part1)  
+[2. Choosing prediction model](#part2)  
+[3. In and out of Sample error](#part3)  
+[4. Prediction results](#part4)  
+
+###1.Exploring and cleaning data{#part1}  
+
+```{r load_libraries,warning=FALSE,message=FALSE}
+library(caret)
+library(RANN)
+library(mice)
+library(doSNOW)
+set.seed(1968)
+```
+Before doing anything split the data into train and test set.
+That will allow us later to use test set as raw as possible  
+
+```{r load_data,cache=TRUE}
+mydata<-read.csv(file = "pml-training.csv", sep=",",dec=".",stringsAsFactors = FALSE)
+#creating test and training set
+inTrain <- createDataPartition(y=mydata$classe,p=0.7, list=FALSE)
+training <- mydata[inTrain,]
+testing <- mydata[-inTrain,]
+dim(training)
+unique(training[,160])
+```  
+As you can see there are 160 columns and more than 10 000 rows.
+The last column is the 'classe' field. It shows the way the observed movement is done and classify it in different categories. Categories of movement are A,B,C,D and E. In a quite "agressive"way we are going to throw away some columns to avoid overfitting and too much variance.    
+
+```{r no_var,cache=TRUE}
+nzv<-nearZeroVar(training)
+length(nzv)
+nzv
+#57 predictors  have a zero variance so they can be kicked out
+training <- training[, -nzv]
+```  
+After the variance cleaning (57 columns out of the way), 103 columns left. Let's check the fields containing NA values.  
+
+```{r NA_values,cache=TRUE}
+#count by column rows containing NAs
+table(colSums(is.na(training)))
+#44 columns are containing each 13452 NAs
+#find and remove columns containing NAs and making sure fields are converted to string and no to factor
+new_training <- as.data.frame(t(na.omit(t(training))),stringsAsFactors = FALSE)
+```  
+We have 44 columns containing 13 452 NAs values. In order to reduce the number of columns let's skip imputing here and get rid of those columns.  103 - 44 = 59 columns left.  
+
+The 6 first columns contain information about time and id ... it is not necessary in this case. We can get rid of them 59 - 6 = 53 columns left.  
+
+```{r ids_time,cache=TRUE}
+#remove id columns 
+new_training<-new_training[,-c(1:6)]
+#transform outcome to factor
+new_training$classe<-as.factor(new_training$classe)
+#converting character fields to numeric
+new_training[,-53]<-data.frame(lapply(new_training[,-53],as.numeric))
+```  
+
+Now let's look for correlated columns.  
+
+```{r corr_col,cache=TRUE}
+#identify and remove correlated columns
+descrCor <- cor(new_training[,-53])
+corr_to_del<-findCorrelation(descrCor)
+new_training<-new_training[,-corr_to_del]
+corr_to_del
+training<-new_training
+n_classe<-length(training)
+#getting new_testing data
+mydata_test<-read.csv(file = "pml-testing.csv", sep=",",dec=".",stringsAsFactors = FALSE)
+new_testing <-mydata_test
+
+```  
+We can get rid of 5 more columns because they are highly correlated to others. 53 - 5 = 48 columns left  
+
+[Go back to table of content](#toc)
+
+
+###2.Choosing a prediction model{#part2} 
+Most of variables left set positions in space (x,y,z) so it is not obvious to turn those kind of preditctors into one. So, I kept them as they are. It is a classification question in a non-linear situation. I have chosen a "tree" model for the accuracy in the result. I have explored 2 models "treebag" and "Random Forest". I got very close results. A very high accuracy. The "rf" model was very time consumming to process and generated a "small"  size model. The "treebag" model was a lot quicker to process but generated a huge model file. You'll find below the detail of treebag model that I chose. Treebag is quite fast to create a model and allows a reduced variance. Hence increasing predictibility. 
+
+**_bagged tree model_**  
+```{r bagged_tree,cache=TRUE,warning=FALSE,message=FALSE}
+cl<-makeCluster(6,type="SOCK")  
+registerDoSNOW(cl)  
+treebagFit1 <- train(classe ~ ., data = training,
+                 method = "treebag",verbose = FALSE)  
+stopCluster(cl)  
+saveRDS(treebagFit1,"treebagFit1.rds")  
+#Analysing treebag model  
+treebagFit1 <- readRDS("treebagFit1.rds")  
+
+``` 
+###3.In and out of sample error{#part3} 
+```{r in_out_sample_error,cache=TRUE,warning=FALSE,message=FALSE}
+#model training accuracy  
+pred_treebag_training <- predict(treebagFit1,newdata=training)  
+confusionMatrix(pred_treebag_training,training$classe)$overall[1]
+table(pred_treebag_training,training$classe)
+#model testing accuracy  
+pred_treebag_testing <- predict(treebagFit1,newdata=testing)  
+confusionMatrix(pred_treebag_testing,testing$classe)$overall[1]
+table(pred_treebag_testing,testing$classe)
+``` 
+*In sample error rate* is : 1 - .9998544 = 0.01456 % (A bit too good to be true)
+*Out of sample error rate* is : 1 - .9836873 = 1.63127 %  
+Logically due to overfitting, the *out of sample error* is a lot bigger than the *in sample error*, but we do accept around 1.5% error rate.  
+
+[Go back to table of content](#toc)  
+
+###4.Prediction results{#part4} 
+You can find below the prediction made by the result model when applied to the test file.
+```{r test_sample,cache=TRUE,warning=FALSE,message=FALSE}
+pred_treebag <- predict(treebagFit1,newdata=new_testing)  
+pred_treebag  
+
+``` 
+[Go back to table of content](#toc)  
